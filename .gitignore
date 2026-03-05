@@ -1,4 +1,10 @@
 node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
 
 debug/
 
@@ -9,4 +15,9 @@ debug/
 .claude/
 .codex/
 
+backend/.env
+backend/runs/*/
+
 AGENTS.md
+
+cloud_docs/
