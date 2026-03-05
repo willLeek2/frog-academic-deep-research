@@ -1,0 +1,12 @@
+node_modules/
+
+debug/
+
+.cusror/
+.qwen/
+.kimi/
+.vscode/
+.claude/
+.codex/
+
+AGENTS.md
