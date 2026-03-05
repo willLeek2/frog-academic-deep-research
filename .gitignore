@@ -19,3 +19,5 @@ backend/.env
 backend/runs/*/
 
 AGENTS.md
+
+cloud_docs/
