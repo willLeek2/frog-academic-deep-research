@@ -1,0 +1,48 @@
+# Deep Research Agent Configuration
+
+models:
+  heavy:
+    provider: "openrouter"
+    model_name: "deepseek/deepseek-r1"
+    temperature: 0.7
+    max_tokens: 4096
+    provider_routing:
+      order: ["DeepInfra", "Fireworks"]
+      allow_fallbacks: true
+      require_parameters: true
+  light:
+    provider: "openrouter"
+    model_name: "deepseek/deepseek-chat"
+    temperature: 0.3
+    max_tokens: 2048
+    provider_routing:
+      order: ["DeepInfra", "Fireworks"]
+      allow_fallbacks: true
+      require_parameters: true
+
+quotas:
+  broad_survey:
+    perplexity_search: 10
+    web_search: 5
+    jina_fetch: 5
+  deep_research:
+    perplexity_search: 20
+    web_search: 10
+    jina_fetch: 15
+  writing:
+    perplexity_search: 5
+    web_search: 3
+    jina_fetch: 5
+
+human_intervention:
+  after_path_evaluation: true
+  after_outline_planning: true
+  after_deep_research: false
+
+stages:
+  - input_preprocessing
+  - broad_survey
+  - path_evaluation
+  - deep_research
+  - writing
+  - post_processing
