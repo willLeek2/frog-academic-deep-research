@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from core.config_loader import AppConfig, StageQuota
 
@@ -20,7 +19,7 @@ class QuotaManager:
         # Build {stage: {tool_name: remaining}} from config
         self._remaining: dict[str, dict[str, int]] = {}
         for stage_name in ("broad_survey", "deep_research", "writing"):
-            stage_quota: Optional[StageQuota] = getattr(
+            stage_quota: StageQuota | None = getattr(
                 config.quotas, stage_name, None
             )
             if stage_quota:
@@ -57,7 +56,7 @@ class QuotaManager:
         """Reset all quotas from config."""
         with self._lock:
             for stage_name in ("broad_survey", "deep_research", "writing"):
-                stage_quota: Optional[StageQuota] = getattr(
+                stage_quota: StageQuota | None = getattr(
                     config.quotas, stage_name, None
                 )
                 if stage_quota:
