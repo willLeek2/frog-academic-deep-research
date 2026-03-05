@@ -24,6 +24,7 @@ class ResearchState(TypedDict):
 
     # Writing
     outline: Optional[dict]  # Document outline
+    context_packs: dict[str, dict]  # {section_id: context_pack}
     drafts: dict[str, str]  # {section_id: draft_content}
     terminology: list[str]  # Marked terminology list
 
@@ -37,5 +38,6 @@ class ResearchState(TypedDict):
 
     # Meta
     run_id: str
+    run_dir: str  # Absolute path to the run directory
     current_stage: str
     messages: Annotated[list, add_messages]

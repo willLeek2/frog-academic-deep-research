@@ -16,6 +16,7 @@ import aiofiles
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.types import Command
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -37,7 +38,7 @@ from utils.stop_controller import StopController
 # ---------------------------------------------------------------------------
 load_dotenv(dotenv_path=_backend_dir / ".env")
 
-app = FastAPI(title="Deep Research Agent API", version="0.1.0")
+app = FastAPI(title="Deep Research Agent API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -51,6 +52,8 @@ config: AppConfig = load_config()
 # Global run state registry (keyed by run_id)
 run_states: dict[str, dict] = {}
 stop_controllers: dict[str, StopController] = {}
+# Store compiled graph apps for resume support
+_graph_apps: dict[str, object] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -95,11 +98,21 @@ async def execute_research_pipeline(run_id: str, input_path: str) -> None:
     logger = RunLogger(run_dir / "run_log.jsonl")
     paper_registry = PaperRegistry()
     quota_manager = QuotaManager(config)
+    mcp_caller = MCPCaller(quota_manager, logger, paper_registry)
 
     logger.log("system", "pipeline", "start", {"run_id": run_id})
 
     try:
-        graph_app = build_graph(run_id, config)
+        graph_app = build_graph(
+            run_id,
+            config,
+            mcp_caller=mcp_caller,
+            quota_manager=quota_manager,
+            run_logger=logger,
+            paper_registry=paper_registry,
+            stop_controller=stop_ctrl,
+        )
+        _graph_apps[run_id] = graph_app
 
         initial_state = {
             "raw_input_path": input_path,
@@ -109,6 +122,7 @@ async def execute_research_pipeline(run_id: str, input_path: str) -> None:
             "research_notes": {},
             "paper_ids": [],
             "outline": None,
+            "context_packs": {},
             "drafts": {},
             "terminology": [],
             "path_status_changes": [],
@@ -116,6 +130,7 @@ async def execute_research_pipeline(run_id: str, input_path: str) -> None:
             "backtrack_round": 0,
             "supplement_requests": {},
             "run_id": run_id,
+            "run_dir": str(run_dir),
             "current_stage": "init",
             "messages": [],
         }
@@ -124,13 +139,21 @@ async def execute_research_pipeline(run_id: str, input_path: str) -> None:
 
         # Run graph synchronously in a thread to avoid blocking the event loop
         def _run_graph():
-            result = graph_app.invoke(initial_state, config=thread_config)
-            return result
+            return graph_app.invoke(initial_state, config=thread_config)
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, _run_graph)
 
-        if stop_ctrl.is_stop_requested():
+        # Check if graph is interrupted (human-in-the-loop)
+        graph_state = graph_app.get_state(thread_config)
+        if graph_state.next:
+            run_states[run_id]["status"] = "waiting_for_human"
+            run_states[run_id]["stage"] = result.get("current_stage", "interrupted")
+            run_states[run_id]["interrupt_data"] = _extract_interrupt_data(graph_state)
+            logger.log("system", "pipeline", "interrupted", {
+                "next_nodes": list(graph_state.next),
+            })
+        elif stop_ctrl.is_stop_requested():
             run_states[run_id]["status"] = "stopped"
             run_states[run_id]["stage"] = "stopped"
             logger.log("system", "pipeline", "stopped", {})
@@ -142,18 +165,79 @@ async def execute_research_pipeline(run_id: str, input_path: str) -> None:
         # Persist paper index
         paper_registry.to_index_file(run_dir / "index.json")
 
-        # Write final report stub
+        # Write final report
         report_path = run_dir / "report.md"
-        drafts = result.get("drafts", {})
-        report_parts = [f"# Research Report — {run_id}\n"]
-        for sec_id, content in drafts.items():
-            report_parts.append(f"\n## {sec_id}\n\n{content}\n")
-        report_path.write_text("\n".join(report_parts), encoding="utf-8")
+        # Try to use the report from output/ if available
+        final_report = run_dir / "output" / "report_final.md"
+        if final_report.exists():
+            shutil.copy2(final_report, report_path)
+        else:
+            drafts = result.get("drafts", {})
+            report_parts = [f"# Research Report — {run_id}\n"]
+            for sec_id, content in drafts.items():
+                report_parts.append(f"\n## {sec_id}\n\n{content}\n")
+            report_path.write_text("\n".join(report_parts), encoding="utf-8")
 
     except Exception as exc:
         run_states[run_id]["status"] = "error"
         run_states[run_id]["error"] = str(exc)
         logger.log("system", "pipeline", "error", {"error": str(exc)})
+
+
+def _extract_interrupt_data(graph_state) -> dict | None:
+    """Extract interrupt payload from a LangGraph state snapshot."""
+    try:
+        tasks = getattr(graph_state, "tasks", ())
+        for task in tasks:
+            interrupts = getattr(task, "interrupts", ())
+            for intr in interrupts:
+                return getattr(intr, "value", None)
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Resume helper
+# ---------------------------------------------------------------------------
+
+async def resume_pipeline(run_id: str, decision: dict) -> None:
+    """Resume a paused pipeline after human review."""
+    graph_app = _graph_apps.get(run_id)
+    if graph_app is None:
+        run_states[run_id]["status"] = "error"
+        run_states[run_id]["error"] = "Graph app not found for resume"
+        return
+
+    thread_config = {"configurable": {"thread_id": run_id}}
+
+    def _resume():
+        return graph_app.invoke(Command(resume=decision), config=thread_config)
+
+    try:
+        run_states[run_id]["status"] = "running"
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _resume)
+
+        # Check again for interrupts
+        graph_state = graph_app.get_state(thread_config)
+        if graph_state.next:
+            run_states[run_id]["status"] = "waiting_for_human"
+            run_states[run_id]["stage"] = result.get("current_stage", "interrupted")
+            run_states[run_id]["interrupt_data"] = _extract_interrupt_data(graph_state)
+        else:
+            run_states[run_id]["status"] = "completed"
+            run_states[run_id]["stage"] = result.get("current_stage", "completed")
+
+        # Copy final report
+        run_dir = _runs_base() / run_id
+        final_report = run_dir / "output" / "report_final.md"
+        if final_report.exists():
+            shutil.copy2(final_report, run_dir / "report.md")
+
+    except Exception as exc:
+        run_states[run_id]["status"] = "error"
+        run_states[run_id]["error"] = str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +281,24 @@ async def stream_progress(run_id: str):
         while True:
             state = run_states.get(run_id)
             if state:
-                yield {"event": "progress", "data": json.dumps(state)}
+                yield {"event": "progress", "data": json.dumps(state, default=str)}
             if state and state.get("status") in ("completed", "error", "stopped"):
                 yield {
                     "event": "done",
                     "data": json.dumps({"status": state.get("status")}),
                 }
                 break
+            if state and state.get("status") == "waiting_for_human":
+                yield {
+                    "event": "interrupt",
+                    "data": json.dumps({
+                        "status": "waiting_for_human",
+                        "interrupt_data": state.get("interrupt_data"),
+                    }, default=str),
+                }
+                # Keep streaming but slower
+                await asyncio.sleep(3)
+                continue
             await asyncio.sleep(1)
 
     return EventSourceResponse(event_generator())
@@ -224,7 +319,14 @@ async def stop_run(run_id: str):
 @app.post("/api/runs/{run_id}/resume")
 async def resume_run(run_id: str, request: ResumeRequest):
     """Resume a paused pipeline after human review."""
-    # In Issue 1, human-in-the-loop is mocked (auto-approve).
+    if run_id not in run_states:
+        return {"error": "Run not found", "run_id": run_id}
+    if run_states[run_id].get("status") != "waiting_for_human":
+        return {"error": "Run is not waiting for human input", "run_id": run_id}
+
+    # Launch resume in background
+    asyncio.create_task(resume_pipeline(run_id, request.decision))
+
     return {"status": "resumed", "run_id": run_id}
 
 
