@@ -1,7 +1,8 @@
 """LangChain tool definitions wrapping MCP calls.
 
-These tools are bound to the LLM for tool-calling. In Issue 1, they return
-mock data via the MCPCaller.
+These tools are bound to the LLM for tool-calling scenarios.  Each tool
+delegates to the module-level MCPCaller instance which is injected at
+startup by main.py or graph.py.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from langchain_core.tools import tool
 
 
 # ---------------------------------------------------------------------------
-# Module-level MCPCaller instance, set at startup by main.py
+# Module-level MCPCaller instance, set at startup
 # ---------------------------------------------------------------------------
 _mcp_caller = None
 _current_stage = "broad_survey"
@@ -51,3 +52,8 @@ def web_search(query: str) -> str:
     if _mcp_caller is None:
         return "[ERROR] MCP caller not initialized"
     return _mcp_caller.web_search(query, _current_stage)
+
+
+def get_all_tools() -> list:
+    """Return all available MCP tools for binding to an LLM."""
+    return [perplexity_search, jina_fetch, web_search]
