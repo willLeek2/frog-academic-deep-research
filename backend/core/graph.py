@@ -254,7 +254,10 @@ def build_graph(
     graph.add_node("human_review_paths", human_review_paths_node)
     graph.add_node("deep_research_dispatch", _make_dispatch_node())
     graph.add_node("deep_research_valuable", deep_researcher)
-    graph.add_node("deep_research_suboptimal", lambda state: {"current_stage": "deep_research_suboptimal_done"})
+    def _suboptimal_noop(state: ResearchState) -> dict[str, Any]:
+        return {"current_stage": "deep_research_suboptimal_done"}
+
+    graph.add_node("deep_research_suboptimal", _suboptimal_noop)
     graph.add_node("post_deep_research_review", _make_post_deep_research_review())
     graph.add_node("outline_planning", outline_planner)
     graph.add_node("human_review_outline", human_review_outline_node)

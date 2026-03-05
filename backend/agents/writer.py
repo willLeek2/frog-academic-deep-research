@@ -132,14 +132,9 @@ class WriterAgent:
 
         # Check for supplement request in the output
         supplement = None
-        sr_match = re.search(r'\{"supplement_request"\s*:', text)
-        if sr_match:
-            try:
-                parsed = parse_json_response(text[sr_match.start():])
-                if parsed and isinstance(parsed, dict):
-                    supplement = parsed.get("supplement_request")
-            except Exception:
-                pass
+        parsed = parse_json_response(text)
+        if parsed and isinstance(parsed, dict) and "supplement_request" in parsed:
+            supplement = parsed["supplement_request"]
 
         return text, supplement
 

@@ -88,7 +88,7 @@ class MCPCaller:
         if not self._perplexity_key:
             return self._mock_perplexity(query)
 
-        model = "sonar" if mode == "web" else "sonar"
+        model = "sonar" if mode == "web" else "sonar-pro"
         try:
             resp = _retry_request(
                 self._http.post,
@@ -186,7 +186,11 @@ class MCPCaller:
                 headers=headers,
             )
             resp.raise_for_status()
-            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {"raw": resp.text}
+            content_type = resp.headers.get("content-type", "")
+            if content_type.startswith("application/json"):
+                data = resp.json()
+            else:
+                data = {"raw": resp.text}
             results = data.get("data", []) if isinstance(data, dict) else []
             parts: list[str] = []
             for item in results[:10]:
